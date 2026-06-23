@@ -13,7 +13,10 @@
 %{
 #include "ast.h"
 #include "yacc.tab.h"
+#include <cerrno>
 #include <iostream>
+#include <limits>
+#include <cstdlib>
 
 // automatically update location
 #define YY_USER_ACTION \
@@ -79,6 +82,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "SNAPSHOT" { return SNAPSHOT; }
 "SERIALIZABLE" { return SERIALIZABLE; }
 "SELECT" { return SELECT; }
+"BIGINT" { return BIGINT; }
 "INT" { return INT; }
 "CHAR" { return CHAR; }
 "FLOAT" { return FLOAT; }
@@ -126,8 +130,16 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 }
     /* literals */
 {value_int} {
-    yylval->sv_int = atoi(yytext);
-    return VALUE_INT;
+    errno = 0;
+    char *end = nullptr;
+    long long value = std::strtoll(yytext, &end, 10);
+    if (errno == 0 && end != yytext && *end == '\0' &&
+        value >= std::numeric_limits<int>::min() && value <= std::numeric_limits<int>::max()) {
+        yylval->sv_int = static_cast<int>(value);
+        return VALUE_INT;
+    }
+    yylval->sv_str = yytext;
+    return VALUE_BIGINT;
 }
 {value_float} {
     yylval->sv_float = atof(yytext);

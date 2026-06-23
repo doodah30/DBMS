@@ -62,6 +62,11 @@ class AbstractExecutor {
             int b = *reinterpret_cast<const int *>(rhs);
             return (a > b) - (a < b);
         }
+        if (type == TYPE_BIGINT) {
+            int64_t a = *reinterpret_cast<const int64_t *>(lhs);
+            int64_t b = *reinterpret_cast<const int64_t *>(rhs);
+            return (a > b) - (a < b);
+        }
         if (type == TYPE_FLOAT) {
             float a = *reinterpret_cast<const float *>(lhs);
             float b = *reinterpret_cast<const float *>(rhs);

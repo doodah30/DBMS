@@ -3,6 +3,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <cstdint>
 
 #include "executor_abstract.h"
 
@@ -11,6 +12,7 @@ class AggregateExecutor : public AbstractExecutor {
     struct Cell {
         ColType type = TYPE_INT;
         int int_val = 0;
+        int64_t bigint_val = 0;
         float float_val = 0;
         std::string str_val;
         int count = 0;
@@ -45,6 +47,8 @@ class AggregateExecutor : public AbstractExecutor {
         cell.initialized = true;
         if (col.type == TYPE_INT) {
             cell.int_val = *reinterpret_cast<int *>(rec->data + col.offset);
+        } else if (col.type == TYPE_BIGINT) {
+            cell.bigint_val = *reinterpret_cast<int64_t *>(rec->data + col.offset);
         } else if (col.type == TYPE_FLOAT) {
             cell.float_val = *reinterpret_cast<float *>(rec->data + col.offset);
         } else {
@@ -56,8 +60,17 @@ class AggregateExecutor : public AbstractExecutor {
 
     int compare_cell(const Cell &lhs, const Cell &rhs) const {
         if (lhs.type == TYPE_FLOAT || rhs.type == TYPE_FLOAT) {
-            float l = lhs.type == TYPE_FLOAT ? lhs.float_val : static_cast<float>(lhs.int_val);
-            float r = rhs.type == TYPE_FLOAT ? rhs.float_val : static_cast<float>(rhs.int_val);
+            float l = lhs.type == TYPE_FLOAT ? lhs.float_val
+                      : lhs.type == TYPE_BIGINT ? static_cast<float>(lhs.bigint_val)
+                                                 : static_cast<float>(lhs.int_val);
+            float r = rhs.type == TYPE_FLOAT ? rhs.float_val
+                      : rhs.type == TYPE_BIGINT ? static_cast<float>(rhs.bigint_val)
+                                                 : static_cast<float>(rhs.int_val);
+            return (l > r) - (l < r);
+        }
+        if (lhs.type == TYPE_BIGINT || rhs.type == TYPE_BIGINT) {
+            int64_t l = lhs.type == TYPE_BIGINT ? lhs.bigint_val : lhs.int_val;
+            int64_t r = rhs.type == TYPE_BIGINT ? rhs.bigint_val : rhs.int_val;
             return (l > r) - (l < r);
         }
         if (lhs.type == TYPE_INT) {
@@ -71,6 +84,8 @@ class AggregateExecutor : public AbstractExecutor {
         for (auto &cell : cells) {
             if (cell.type == TYPE_INT) {
                 os << "i" << cell.int_val << "|";
+            } else if (cell.type == TYPE_BIGINT) {
+                os << "b" << cell.bigint_val << "|";
             } else if (cell.type == TYPE_FLOAT) {
                 os << "f" << cell.float_val << "|";
             } else {
@@ -86,6 +101,9 @@ class AggregateExecutor : public AbstractExecutor {
         if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(value)) {
             cell.type = TYPE_INT;
             cell.int_val = int_lit->val;
+        } else if (auto bigint_lit = std::dynamic_pointer_cast<ast::BigIntLit>(value)) {
+            cell.type = TYPE_BIGINT;
+            cell.bigint_val = std::stoll(bigint_lit->val);
         } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(value)) {
             cell.type = TYPE_FLOAT;
             cell.float_val = float_lit->val;
@@ -125,8 +143,13 @@ class AggregateExecutor : public AbstractExecutor {
     void write_cell(RmRecord *rec, const ColMeta &col, const Cell &cell) const {
         if (col.type == TYPE_INT) {
             *reinterpret_cast<int *>(rec->data + col.offset) = cell.int_val;
+        } else if (col.type == TYPE_BIGINT) {
+            int64_t value = cell.type == TYPE_BIGINT ? cell.bigint_val : cell.int_val;
+            *reinterpret_cast<int64_t *>(rec->data + col.offset) = value;
         } else if (col.type == TYPE_FLOAT) {
-            float value = cell.type == TYPE_FLOAT ? cell.float_val : static_cast<float>(cell.int_val);
+            float value = cell.type == TYPE_FLOAT ? cell.float_val
+                          : cell.type == TYPE_BIGINT ? static_cast<float>(cell.bigint_val)
+                                                     : static_cast<float>(cell.int_val);
             *reinterpret_cast<float *>(rec->data + col.offset) = value;
         } else {
             memset(rec->data + col.offset, 0, col.len);
@@ -142,9 +165,11 @@ class AggregateExecutor : public AbstractExecutor {
             return;
         }
         if (type == ast::AGG_SUM) {
-            agg.type = input.type == TYPE_FLOAT ? TYPE_FLOAT : TYPE_INT;
+            agg.type = input.type == TYPE_FLOAT ? TYPE_FLOAT : input.type == TYPE_BIGINT ? TYPE_BIGINT : TYPE_INT;
             if (input.type == TYPE_FLOAT) {
                 agg.float_val += input.float_val;
+            } else if (input.type == TYPE_BIGINT) {
+                agg.bigint_val += input.bigint_val;
             } else {
                 agg.int_val += input.int_val;
             }
@@ -153,7 +178,9 @@ class AggregateExecutor : public AbstractExecutor {
         }
         if (type == ast::AGG_AVG) {
             agg.type = TYPE_FLOAT;
-            agg.float_val += input.type == TYPE_FLOAT ? input.float_val : static_cast<float>(input.int_val);
+            agg.float_val += input.type == TYPE_FLOAT ? input.float_val
+                             : input.type == TYPE_BIGINT ? static_cast<float>(input.bigint_val)
+                                                        : static_cast<float>(input.int_val);
             agg.count++;
             agg.initialized = true;
             return;

@@ -37,6 +37,9 @@ std::string value_to_string(const std::shared_ptr<ast::Value> &value) {
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(value)) {
         return std::to_string(int_lit->val);
     }
+    if (auto bigint_lit = std::dynamic_pointer_cast<ast::BigIntLit>(value)) {
+        return bigint_lit->val;
+    }
     if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(value)) {
         char buf[64];
         snprintf(buf, sizeof(buf), "%.6f", float_lit->val);
@@ -122,6 +125,8 @@ std::string condition_key(const Condition &cond) {
     key += "v" + std::to_string(static_cast<int>(cond.rhs_val.type)) + "\x1e";
     if (cond.rhs_val.type == TYPE_INT) {
         key += std::to_string(cond.rhs_val.int_val);
+    } else if (cond.rhs_val.type == TYPE_BIGINT) {
+        key += std::to_string(cond.rhs_val.bigint_val);
     } else if (cond.rhs_val.type == TYPE_FLOAT) {
         key += std::to_string(cond.rhs_val.float_val);
     } else {
@@ -349,9 +354,17 @@ std::vector<std::string> make_explain_lines(const std::shared_ptr<ast::SelectStm
         int cmp = 0;
         if (lhs_col.type == TYPE_FLOAT || rhs_col.type == TYPE_FLOAT) {
             float lhs = lhs_col.type == TYPE_FLOAT ? *reinterpret_cast<const float *>(lhs_raw.data())
-                                                   : static_cast<float>(*reinterpret_cast<const int *>(lhs_raw.data()));
+                        : lhs_col.type == TYPE_BIGINT ? static_cast<float>(*reinterpret_cast<const int64_t *>(lhs_raw.data()))
+                                                       : static_cast<float>(*reinterpret_cast<const int *>(lhs_raw.data()));
             float rhs = rhs_col.type == TYPE_FLOAT ? *reinterpret_cast<const float *>(rhs_raw.data())
-                                                   : static_cast<float>(*reinterpret_cast<const int *>(rhs_raw.data()));
+                        : rhs_col.type == TYPE_BIGINT ? static_cast<float>(*reinterpret_cast<const int64_t *>(rhs_raw.data()))
+                                                       : static_cast<float>(*reinterpret_cast<const int *>(rhs_raw.data()));
+            cmp = (lhs > rhs) - (lhs < rhs);
+        } else if (lhs_col.type == TYPE_BIGINT || rhs_col.type == TYPE_BIGINT) {
+            int64_t lhs = lhs_col.type == TYPE_BIGINT ? *reinterpret_cast<const int64_t *>(lhs_raw.data())
+                                                      : *reinterpret_cast<const int *>(lhs_raw.data());
+            int64_t rhs = rhs_col.type == TYPE_BIGINT ? *reinterpret_cast<const int64_t *>(rhs_raw.data())
+                                                      : *reinterpret_cast<const int *>(rhs_raw.data());
             cmp = (lhs > rhs) - (lhs < rhs);
         } else if (lhs_col.type == TYPE_INT) {
             int lhs = *reinterpret_cast<const int *>(lhs_raw.data());
@@ -387,11 +400,22 @@ std::vector<std::string> make_explain_lines(const std::shared_ptr<ast::SelectStm
                 memcpy(rhs_raw.data(), &f, sizeof(float));
                 rhs_col.type = TYPE_FLOAT;
                 rhs_col.len = sizeof(float);
+            } else if (lhs_col.type == TYPE_BIGINT) {
+                int64_t big = static_cast<int64_t>(value);
+                memcpy(rhs_raw.data(), &big, sizeof(int64_t));
+                rhs_col.type = TYPE_BIGINT;
+                rhs_col.len = sizeof(int64_t);
             } else {
                 memcpy(rhs_raw.data(), &value, sizeof(int));
                 rhs_col.type = TYPE_INT;
                 rhs_col.len = sizeof(int);
             }
+        } else if (auto bigint_lit = std::dynamic_pointer_cast<ast::BigIntLit>(cond->rhs)) {
+            int64_t value = std::stoll(bigint_lit->val);
+            rhs_raw.assign(sizeof(int64_t), '\0');
+            memcpy(rhs_raw.data(), &value, sizeof(int64_t));
+            rhs_col.type = TYPE_BIGINT;
+            rhs_col.len = sizeof(int64_t);
         } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(cond->rhs)) {
             float value = float_lit->val;
             memcpy(rhs_raw.data(), &value, sizeof(float));

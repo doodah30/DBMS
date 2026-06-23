@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <set>
 
 #include "executor_abstract.h"
@@ -22,6 +23,10 @@ class UnionExecutor : public AbstractExecutor {
         }
         if (dst_col.type == TYPE_FLOAT && src_col.type == TYPE_INT) {
             *reinterpret_cast<float *>(dst_data) = static_cast<float>(*reinterpret_cast<const int *>(src_data));
+            return;
+        }
+        if (dst_col.type == TYPE_BIGINT && src_col.type == TYPE_INT) {
+            *reinterpret_cast<int64_t *>(dst_data) = static_cast<int64_t>(*reinterpret_cast<const int *>(src_data));
             return;
         }
         throw IncompatibleTypeError(coltype2str(dst_col.type), coltype2str(src_col.type));

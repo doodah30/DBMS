@@ -10,7 +10,21 @@ See the Mulan PSL v2 for more details. */
 
 #include "analyze.h"
 
+#include <cerrno>
+#include <cstdlib>
+#include <limits>
+
 namespace {
+int64_t parse_bigint_literal(const std::string &text) {
+    errno = 0;
+    char *end = nullptr;
+    long long value = std::strtoll(text.c_str(), &end, 10);
+    if (errno == ERANGE || end == text.c_str() || *end != '\0') {
+        throw RMDBError("bigint overflow");
+    }
+    return static_cast<int64_t>(value);
+}
+
 std::string agg_default_name(ast::AggType type) {
     switch (type) {
         case ast::AGG_COUNT: return "count";
@@ -92,6 +106,11 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
                                (dst.type == TYPE_FLOAT && src.type == TYPE_INT)) {
                         dst.type = TYPE_FLOAT;
                         dst.len = sizeof(float);
+                    } else if (dst.type == TYPE_BIGINT && src.type == TYPE_INT) {
+                        dst.len = sizeof(int64_t);
+                    } else if (dst.type == TYPE_INT && src.type == TYPE_BIGINT) {
+                        dst.type = TYPE_BIGINT;
+                        dst.len = sizeof(int64_t);
                     } else {
                         throw RMDBError("union column type mismatch");
                     }
@@ -280,6 +299,9 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             if (col_meta->type == TYPE_FLOAT && rhs.type == TYPE_INT) {
                 rhs.set_float(static_cast<float>(rhs.int_val));
                 rhs.init_raw(col_meta->len);
+            } else if (col_meta->type == TYPE_BIGINT && rhs.type == TYPE_INT) {
+                rhs.set_bigint(static_cast<int64_t>(rhs.int_val));
+                rhs.init_raw(col_meta->len);
             } else if (col_meta->type != rhs.type) {
                 throw IncompatibleTypeError(coltype2str(col_meta->type), coltype2str(rhs.type));
             } else {
@@ -359,6 +381,11 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
                            (dst.type == TYPE_FLOAT && src.type == TYPE_INT)) {
                     dst.type = TYPE_FLOAT;
                     dst.len = sizeof(float);
+                } else if (dst.type == TYPE_BIGINT && src.type == TYPE_INT) {
+                    dst.len = sizeof(int64_t);
+                } else if (dst.type == TYPE_INT && src.type == TYPE_BIGINT) {
+                    dst.type = TYPE_BIGINT;
+                    dst.len = sizeof(int64_t);
                 } else {
                     throw RMDBError("union column type mismatch");
                 }
@@ -491,7 +518,6 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
         ColType lhs_type = lhs_col->type;
         ColType rhs_type;
         if (cond.is_rhs_val) {
-            cond.rhs_val.init_raw(lhs_col->len);
             rhs_type = cond.rhs_val.type;
         } else {
             TabMeta &rhs_tab = sm_manager_->db_.get_table(base_table(cond.rhs_col.tab_name));
@@ -504,8 +530,17 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
             cond.rhs_val.init_raw(lhs_col->len);
             rhs_type = TYPE_FLOAT;
         }
+        if (cond.is_rhs_val && lhs_type == TYPE_BIGINT && rhs_type == TYPE_INT) {
+            cond.rhs_val.set_bigint(static_cast<int64_t>(cond.rhs_val.int_val));
+            cond.rhs_val.raw = nullptr;
+            cond.rhs_val.init_raw(lhs_col->len);
+            rhs_type = TYPE_BIGINT;
+        }
         if (lhs_type != rhs_type) {
             throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));
+        }
+        if (cond.is_rhs_val && cond.rhs_val.raw == nullptr) {
+            cond.rhs_val.init_raw(lhs_col->len);
         }
     }
 }
@@ -515,6 +550,8 @@ Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val) {
     Value val;
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(sv_val)) {
         val.set_int(int_lit->val);
+    } else if (auto bigint_lit = std::dynamic_pointer_cast<ast::BigIntLit>(sv_val)) {
+        val.set_bigint(parse_bigint_literal(bigint_lit->val));
     } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(sv_val)) {
         val.set_float(float_lit->val);
     } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(sv_val)) {

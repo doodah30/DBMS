@@ -45,6 +45,8 @@ class InsertExecutor : public AbstractExecutor {
             auto &val = values_[i];
             if (col.type == TYPE_FLOAT && val.type == TYPE_INT) {
                 val.set_float(static_cast<float>(val.int_val));
+            } else if (col.type == TYPE_BIGINT && val.type == TYPE_INT) {
+                val.set_bigint(static_cast<int64_t>(val.int_val));
             } else if (col.type != val.type) {
                 throw IncompatibleTypeError(coltype2str(col.type), coltype2str(val.type));
             }
