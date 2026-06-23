@@ -5,6 +5,7 @@
 #include <sstream>
 #include <cstdint>
 
+#include "common/datetime.h"
 #include "executor_abstract.h"
 
 class AggregateExecutor : public AbstractExecutor {
@@ -13,6 +14,7 @@ class AggregateExecutor : public AbstractExecutor {
         ColType type = TYPE_INT;
         int int_val = 0;
         int64_t bigint_val = 0;
+        int64_t datetime_val = 0;
         float float_val = 0;
         std::string str_val;
         int count = 0;
@@ -49,6 +51,8 @@ class AggregateExecutor : public AbstractExecutor {
             cell.int_val = *reinterpret_cast<int *>(rec->data + col.offset);
         } else if (col.type == TYPE_BIGINT) {
             cell.bigint_val = *reinterpret_cast<int64_t *>(rec->data + col.offset);
+        } else if (col.type == TYPE_DATETIME) {
+            cell.datetime_val = *reinterpret_cast<int64_t *>(rec->data + col.offset);
         } else if (col.type == TYPE_FLOAT) {
             cell.float_val = *reinterpret_cast<float *>(rec->data + col.offset);
         } else {
@@ -73,6 +77,11 @@ class AggregateExecutor : public AbstractExecutor {
             int64_t r = rhs.type == TYPE_BIGINT ? rhs.bigint_val : rhs.int_val;
             return (l > r) - (l < r);
         }
+        if (lhs.type == TYPE_DATETIME || rhs.type == TYPE_DATETIME) {
+            int64_t l = lhs.type == TYPE_DATETIME ? lhs.datetime_val : lhs.int_val;
+            int64_t r = rhs.type == TYPE_DATETIME ? rhs.datetime_val : rhs.int_val;
+            return (l > r) - (l < r);
+        }
         if (lhs.type == TYPE_INT) {
             return (lhs.int_val > rhs.int_val) - (lhs.int_val < rhs.int_val);
         }
@@ -86,6 +95,8 @@ class AggregateExecutor : public AbstractExecutor {
                 os << "i" << cell.int_val << "|";
             } else if (cell.type == TYPE_BIGINT) {
                 os << "b" << cell.bigint_val << "|";
+            } else if (cell.type == TYPE_DATETIME) {
+                os << "d" << cell.datetime_val << "|";
             } else if (cell.type == TYPE_FLOAT) {
                 os << "f" << cell.float_val << "|";
             } else {
@@ -108,8 +119,13 @@ class AggregateExecutor : public AbstractExecutor {
             cell.type = TYPE_FLOAT;
             cell.float_val = float_lit->val;
         } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(value)) {
-            cell.type = TYPE_STRING;
-            cell.str_val = str_lit->val;
+            try {
+                cell.type = TYPE_DATETIME;
+                cell.datetime_val = datetime_util::parse_datetime(str_lit->val);
+            } catch (RMDBError &) {
+                cell.type = TYPE_STRING;
+                cell.str_val = str_lit->val;
+            }
         }
         return cell;
     }
@@ -145,6 +161,9 @@ class AggregateExecutor : public AbstractExecutor {
             *reinterpret_cast<int *>(rec->data + col.offset) = cell.int_val;
         } else if (col.type == TYPE_BIGINT) {
             int64_t value = cell.type == TYPE_BIGINT ? cell.bigint_val : cell.int_val;
+            *reinterpret_cast<int64_t *>(rec->data + col.offset) = value;
+        } else if (col.type == TYPE_DATETIME) {
+            int64_t value = cell.type == TYPE_DATETIME ? cell.datetime_val : cell.int_val;
             *reinterpret_cast<int64_t *>(rec->data + col.offset) = value;
         } else if (col.type == TYPE_FLOAT) {
             float value = cell.type == TYPE_FLOAT ? cell.float_val

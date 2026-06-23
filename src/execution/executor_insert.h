@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
+#include "common/datetime.h"
 #include "index/ix.h"
 #include "system/sm.h"
 
@@ -47,6 +48,8 @@ class InsertExecutor : public AbstractExecutor {
                 val.set_float(static_cast<float>(val.int_val));
             } else if (col.type == TYPE_BIGINT && val.type == TYPE_INT) {
                 val.set_bigint(static_cast<int64_t>(val.int_val));
+            } else if (col.type == TYPE_DATETIME && val.type == TYPE_STRING) {
+                val.set_datetime(datetime_util::parse_datetime(val.str_val));
             } else if (col.type != val.type) {
                 throw IncompatibleTypeError(coltype2str(col.type), coltype2str(val.type));
             }

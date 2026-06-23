@@ -83,6 +83,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "SERIALIZABLE" { return SERIALIZABLE; }
 "SELECT" { return SELECT; }
 "BIGINT" { return BIGINT; }
+"DATETIME" { return DATETIME; }
 "INT" { return INT; }
 "CHAR" { return CHAR; }
 "FLOAT" { return FLOAT; }

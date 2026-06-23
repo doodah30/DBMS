@@ -24,6 +24,7 @@ See the Mulan PSL v2 for more details. */
 #include "execution/executor_projection.h"
 #include "execution/executor_seq_scan.h"
 #include "execution/executor_update.h"
+#include "common/datetime.h"
 #include "index/ix.h"
 #include "record/rm_scan.h"
 #include "record_printer.h"
@@ -127,6 +128,8 @@ std::string condition_key(const Condition &cond) {
         key += std::to_string(cond.rhs_val.int_val);
     } else if (cond.rhs_val.type == TYPE_BIGINT) {
         key += std::to_string(cond.rhs_val.bigint_val);
+    } else if (cond.rhs_val.type == TYPE_DATETIME) {
+        key += std::to_string(cond.rhs_val.datetime_val);
     } else if (cond.rhs_val.type == TYPE_FLOAT) {
         key += std::to_string(cond.rhs_val.float_val);
     } else {
@@ -360,10 +363,13 @@ std::vector<std::string> make_explain_lines(const std::shared_ptr<ast::SelectStm
                         : rhs_col.type == TYPE_BIGINT ? static_cast<float>(*reinterpret_cast<const int64_t *>(rhs_raw.data()))
                                                        : static_cast<float>(*reinterpret_cast<const int *>(rhs_raw.data()));
             cmp = (lhs > rhs) - (lhs < rhs);
-        } else if (lhs_col.type == TYPE_BIGINT || rhs_col.type == TYPE_BIGINT) {
-            int64_t lhs = lhs_col.type == TYPE_BIGINT ? *reinterpret_cast<const int64_t *>(lhs_raw.data())
+        } else if (lhs_col.type == TYPE_BIGINT || rhs_col.type == TYPE_BIGINT ||
+                   lhs_col.type == TYPE_DATETIME || rhs_col.type == TYPE_DATETIME) {
+            int64_t lhs = (lhs_col.type == TYPE_BIGINT || lhs_col.type == TYPE_DATETIME)
+                              ? *reinterpret_cast<const int64_t *>(lhs_raw.data())
                                                       : *reinterpret_cast<const int *>(lhs_raw.data());
-            int64_t rhs = rhs_col.type == TYPE_BIGINT ? *reinterpret_cast<const int64_t *>(rhs_raw.data())
+            int64_t rhs = (rhs_col.type == TYPE_BIGINT || rhs_col.type == TYPE_DATETIME)
+                              ? *reinterpret_cast<const int64_t *>(rhs_raw.data())
                                                       : *reinterpret_cast<const int *>(rhs_raw.data());
             cmp = (lhs > rhs) - (lhs < rhs);
         } else if (lhs_col.type == TYPE_INT) {
@@ -422,9 +428,17 @@ std::vector<std::string> make_explain_lines(const std::shared_ptr<ast::SelectStm
             rhs_col.type = TYPE_FLOAT;
             rhs_col.len = sizeof(float);
         } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(cond->rhs)) {
-            rhs_raw.assign(lhs_col.len, '\0');
-            memcpy(rhs_raw.data(), str_lit->val.c_str(), std::min<int>(lhs_col.len, str_lit->val.size()));
-            rhs_col.type = TYPE_STRING;
+            if (lhs_col.type == TYPE_DATETIME) {
+                int64_t value = datetime_util::parse_datetime(str_lit->val);
+                rhs_raw.assign(sizeof(int64_t), '\0');
+                memcpy(rhs_raw.data(), &value, sizeof(int64_t));
+                rhs_col.type = TYPE_DATETIME;
+                rhs_col.len = sizeof(int64_t);
+            } else {
+                rhs_raw.assign(lhs_col.len, '\0');
+                memcpy(rhs_raw.data(), str_lit->val.c_str(), std::min<int>(lhs_col.len, str_lit->val.size()));
+                rhs_col.type = TYPE_STRING;
+            }
         }
         return compare_raw(lhs_col, lhs_raw, rhs_col, rhs_raw, cond->op);
     };

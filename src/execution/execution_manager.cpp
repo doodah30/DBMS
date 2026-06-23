@@ -17,6 +17,7 @@ See the Mulan PSL v2 for more details. */
 #include "executor_projection.h"
 #include "executor_seq_scan.h"
 #include "executor_update.h"
+#include "common/datetime.h"
 #include "index/ix.h"
 #include "record_printer.h"
 
@@ -32,7 +33,7 @@ const char *help_info = "Supported SQL syntax:\n"
                    "  UPDATE table_name SET column_name = value [, column_name = value ...] [WHERE where_clause]\n"
                    "  SELECT selector FROM table_name [WHERE where_clause]\n"
                    "type:\n"
-                   "  {INT | FLOAT | CHAR(n)}\n"
+                   "  {INT | BIGINT | DATETIME | FLOAT | CHAR(n)}\n"
                    "where_clause:\n"
                    "  condition [AND condition ...]\n"
                    "condition:\n"
@@ -201,6 +202,8 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
                 col_str = std::to_string(*(int *)rec_buf);
             } else if (col.type == TYPE_BIGINT) {
                 col_str = std::to_string(*(int64_t *)rec_buf);
+            } else if (col.type == TYPE_DATETIME) {
+                col_str = datetime_util::format_datetime(*(int64_t *)rec_buf);
             } else if (col.type == TYPE_FLOAT) {
                 col_str = std::to_string(*(float *)rec_buf);
             } else if (col.type == TYPE_STRING) {

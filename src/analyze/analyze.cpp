@@ -14,6 +14,8 @@ See the Mulan PSL v2 for more details. */
 #include <cstdlib>
 #include <limits>
 
+#include "common/datetime.h"
+
 namespace {
 int64_t parse_bigint_literal(const std::string &text) {
     errno = 0;
@@ -302,6 +304,9 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             } else if (col_meta->type == TYPE_BIGINT && rhs.type == TYPE_INT) {
                 rhs.set_bigint(static_cast<int64_t>(rhs.int_val));
                 rhs.init_raw(col_meta->len);
+            } else if (col_meta->type == TYPE_DATETIME && rhs.type == TYPE_STRING) {
+                rhs.set_datetime(datetime_util::parse_datetime(rhs.str_val));
+                rhs.init_raw(col_meta->len);
             } else if (col_meta->type != rhs.type) {
                 throw IncompatibleTypeError(coltype2str(col_meta->type), coltype2str(rhs.type));
             } else {
@@ -535,6 +540,12 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
             cond.rhs_val.raw = nullptr;
             cond.rhs_val.init_raw(lhs_col->len);
             rhs_type = TYPE_BIGINT;
+        }
+        if (cond.is_rhs_val && lhs_type == TYPE_DATETIME && rhs_type == TYPE_STRING) {
+            cond.rhs_val.set_datetime(datetime_util::parse_datetime(cond.rhs_val.str_val));
+            cond.rhs_val.raw = nullptr;
+            cond.rhs_val.init_raw(lhs_col->len);
+            rhs_type = TYPE_DATETIME;
         }
         if (lhs_type != rhs_type) {
             throw IncompatibleTypeError(coltype2str(lhs_type), coltype2str(rhs_type));

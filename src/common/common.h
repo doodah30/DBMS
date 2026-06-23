@@ -35,6 +35,7 @@ struct Value {
         int int_val;      // int value
         float float_val;  // float value
         int64_t bigint_val; // bigint value
+        int64_t datetime_val; // datetime value
     };
     std::string str_val;  // string value
 
@@ -55,6 +56,11 @@ struct Value {
         bigint_val = bigint_val_;
     }
 
+    void set_datetime(int64_t datetime_val_) {
+        type = TYPE_DATETIME;
+        datetime_val = datetime_val_;
+    }
+
     void set_str(std::string str_val_) {
         type = TYPE_STRING;
         str_val = std::move(str_val_);
@@ -69,6 +75,9 @@ struct Value {
         } else if (type == TYPE_BIGINT) {
             assert(len == sizeof(int64_t));
             *(int64_t *)(raw->data) = bigint_val;
+        } else if (type == TYPE_DATETIME) {
+            assert(len == sizeof(int64_t));
+            *(int64_t *)(raw->data) = datetime_val;
         } else if (type == TYPE_FLOAT) {
             assert(len == sizeof(float));
             *(float *)(raw->data) = float_val;
