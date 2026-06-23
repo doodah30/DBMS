@@ -125,6 +125,12 @@ class IndexNestedLoopJoinExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
+        if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr &&
+            context_->txn_->get_isolation_level() == IsolationLevel::SERIALIZABLE &&
+            !context_->lock_mgr_->lock_shared_on_table(context_->txn_, right_fh_->GetFd())) {
+            throw TransactionAbortException(context_->txn_->get_transaction_id(), AbortReason::DEADLOCK_PREVENTION);
+        }
+
         isend_ = false;
         left_->beginTuple();
         load_matches_for_left();

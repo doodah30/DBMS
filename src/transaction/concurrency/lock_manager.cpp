@@ -42,22 +42,7 @@ LockManager::GroupLockMode group_mode_after_grant(LockManager::LockMode mode) {
  * @param {int} tab_fd
  */
 bool LockManager::lock_shared_on_record(Transaction* txn, const Rid& rid, int tab_fd) {
-    if (txn == nullptr) {
-        return true;
-    }
-    std::lock_guard<std::mutex> lock(latch_);
-    LockDataId lock_data_id(tab_fd, rid, LockDataType::RECORD);
-    auto iter = lock_table_.find(lock_data_id);
-    if (iter == lock_table_.end()) {
-        return true;
-    }
-    for (const auto &request : iter->second.request_queue_) {
-        if (request.granted_ && request.txn_id_ != txn->get_transaction_id() && is_exclusive(request.lock_mode_) &&
-            txn->get_transaction_id() > request.txn_id_) {
-            return false;
-        }
-    }
-    return true;
+    return lock_on_data(txn, LockDataId(tab_fd, rid, LockDataType::RECORD), LockMode::SHARED);
 }
 
 /**
@@ -159,9 +144,6 @@ bool LockManager::lock_on_data(Transaction *txn, const LockDataId &lock_data_id,
             continue;
         }
         if (lock_mode == LockMode::EXLUCSIVE || is_exclusive(iter->lock_mode_)) {
-            if (txn_id < iter->txn_id_) {
-                continue;
-            }
             return false;
         }
     }

@@ -40,7 +40,7 @@ class UpdateExecutor : public AbstractExecutor {
     }
     std::unique_ptr<RmRecord> Next() override {
         if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr &&
-            context_->txn_->get_isolation_level() == IsolationLevel::SERIALIZABLE && context_->txn_->has_read() &&
+            context_->txn_->get_isolation_level() == IsolationLevel::SERIALIZABLE &&
             !context_->lock_mgr_->lock_exclusive_on_table(context_->txn_, fh_->GetFd())) {
             throw TransactionAbortException(context_->txn_->get_transaction_id(), AbortReason::DEADLOCK_PREVENTION);
         }

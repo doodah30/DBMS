@@ -43,14 +43,6 @@ class IndexScanExecutor : public AbstractExecutor {
 
     SmManager *sm_manager_;
 
-    void lock_current_tuple() {
-        if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr &&
-            context_->txn_->get_isolation_level() == IsolationLevel::SERIALIZABLE &&
-            !context_->lock_mgr_->lock_shared_on_record(context_->txn_, rid_, fh_->GetFd())) {
-            throw TransactionAbortException(context_->txn_->get_transaction_id(), AbortReason::DEADLOCK_PREVENTION);
-        }
-    }
-
     struct IndexKeyCondition {
         int key_offset;
         ColMeta col;
@@ -125,7 +117,14 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
-        const auto *snapshot = context_ != nullptr && context_->txn_ != nullptr
+        if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr &&
+            context_->txn_->get_isolation_level() == IsolationLevel::SERIALIZABLE &&
+            !context_->lock_mgr_->lock_shared_on_table(context_->txn_, fh_->GetFd())) {
+            throw TransactionAbortException(context_->txn_->get_transaction_id(), AbortReason::DEADLOCK_PREVENTION);
+        }
+
+        const auto *snapshot = context_ != nullptr && context_->txn_ != nullptr &&
+                                       context_->txn_->get_isolation_level() == IsolationLevel::REPEATABLE_READ
                                    ? context_->txn_->get_snapshot_records(tab_name_)
                                    : nullptr;
         if (context_ != nullptr && context_->txn_ != nullptr &&
@@ -139,7 +138,6 @@ class IndexScanExecutor : public AbstractExecutor {
             while (snapshot_cursor_ < snapshot_records_.size()) {
                 rid_ = snapshot_records_[snapshot_cursor_].first;
                 if (eval_conds(cols_, &snapshot_records_[snapshot_cursor_].second, fed_conds_)) {
-                    lock_current_tuple();
                     return;
                 }
                 snapshot_cursor_++;
@@ -189,7 +187,6 @@ class IndexScanExecutor : public AbstractExecutor {
             rid_ = matched_rids_[cursor_];
             auto rec = fh_->get_record(rid_, context_);
             if (eval_conds(cols_, rec.get(), fed_conds_)) {
-                lock_current_tuple();
                 return;
             }
             cursor_++;
@@ -204,7 +201,6 @@ class IndexScanExecutor : public AbstractExecutor {
             while (snapshot_cursor_ < snapshot_records_.size()) {
                 rid_ = snapshot_records_[snapshot_cursor_].first;
                 if (eval_conds(cols_, &snapshot_records_[snapshot_cursor_].second, fed_conds_)) {
-                    lock_current_tuple();
                     return;
                 }
                 snapshot_cursor_++;
@@ -218,7 +214,6 @@ class IndexScanExecutor : public AbstractExecutor {
             rid_ = matched_rids_[cursor_];
             auto rec = fh_->get_record(rid_, context_);
             if (eval_conds(cols_, rec.get(), fed_conds_)) {
-                lock_current_tuple();
                 return;
             }
             cursor_++;
