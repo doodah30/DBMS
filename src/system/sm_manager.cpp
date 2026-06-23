@@ -14,6 +14,7 @@ See the Mulan PSL v2 for more details. */
 #include <unistd.h>
 
 #include <fstream>
+#include <set>
 
 #include "index/ix.h"
 #include "record/rm.h"
@@ -282,12 +283,26 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
         auto col = tab.get_col(col_name);
         index_cols.push_back(*col);
         col_tot_len += col->len;
-        col->index = true;
     }
+
+    std::set<std::string> seen_keys;
+    std::unique_ptr<char[]> key(new char[col_tot_len]);
+    for (RmScan scan(fhs_.at(tab_name).get()); !scan.is_end(); scan.next()) {
+        auto rec = fhs_.at(tab_name)->get_record(scan.rid(), context);
+        int offset = 0;
+        for (auto &col : index_cols) {
+            memcpy(key.get() + offset, rec->data + col.offset, col.len);
+            offset += col.len;
+        }
+        std::string key_str(key.get(), col_tot_len);
+        if (!seen_keys.insert(key_str).second) {
+            throw RMDBError("Duplicate key");
+        }
+    }
+
     ix_manager_->create_index(tab_name, index_cols);
     auto ih = ix_manager_->open_index(tab_name, index_cols);
 
-    std::unique_ptr<char[]> key(new char[col_tot_len]);
     for (RmScan scan(fhs_.at(tab_name).get()); !scan.is_end(); scan.next()) {
         auto rec = fhs_.at(tab_name)->get_record(scan.rid(), context);
         int offset = 0;
@@ -304,6 +319,9 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
     index_meta.col_num = static_cast<int>(index_cols.size());
     index_meta.cols = index_cols;
     tab.indexes.push_back(index_meta);
+    for (auto &col_name : col_names) {
+        tab.get_col(col_name)->index = true;
+    }
     ihs_.emplace(ix_manager_->get_index_name(tab_name, index_cols), std::move(ih));
     flush_meta();
 }
@@ -320,8 +338,9 @@ void SmManager::drop_index(const std::string& tab_name, const std::vector<std::s
     }
     TabMeta &tab = db_.get_table(tab_name);
     auto index_it = tab.get_index_meta(col_names);
+    std::vector<std::string> removed_cols;
     for (auto &col_meta : index_it->cols) {
-        tab.get_col(col_meta.name)->index = false;
+        removed_cols.push_back(col_meta.name);
     }
     std::string ix_name = ix_manager_->get_index_name(tab_name, col_names);
     if (ihs_.count(ix_name)) {
@@ -330,6 +349,21 @@ void SmManager::drop_index(const std::string& tab_name, const std::vector<std::s
     }
     ix_manager_->destroy_index(tab_name, col_names);
     tab.indexes.erase(index_it);
+    for (auto &col_name : removed_cols) {
+        bool still_indexed = false;
+        for (auto &index : tab.indexes) {
+            for (auto &col_meta : index.cols) {
+                if (col_meta.name == col_name) {
+                    still_indexed = true;
+                    break;
+                }
+            }
+            if (still_indexed) {
+                break;
+            }
+        }
+        tab.get_col(col_name)->index = still_indexed;
+    }
     flush_meta();
 }
 

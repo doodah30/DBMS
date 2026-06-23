@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <optional>
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -40,6 +42,45 @@ class IndexScanExecutor : public AbstractExecutor {
     size_t snapshot_cursor_ = 0;
 
     SmManager *sm_manager_;
+
+    struct IndexKeyCondition {
+        int key_offset;
+        ColMeta col;
+        Condition cond;
+    };
+
+    std::optional<Condition> find_value_cond(const ColMeta &index_col, CompOp op) const {
+        auto cond_it = std::find_if(fed_conds_.begin(), fed_conds_.end(), [&](const Condition &cond) {
+            return cond.is_rhs_val && cond.op == op && cond.lhs_col.tab_name == visible_name_ &&
+                   cond.lhs_col.col_name == index_col.name;
+        });
+        if (cond_it == fed_conds_.end()) {
+            return std::nullopt;
+        }
+        return *cond_it;
+    }
+
+    std::vector<IndexKeyCondition> build_index_key_conds() const {
+        std::vector<IndexKeyCondition> key_conds;
+        int key_offset = 0;
+        for (auto &index_col : index_meta_.cols) {
+            auto eq_cond = find_value_cond(index_col, OP_EQ);
+            if (eq_cond.has_value()) {
+                key_conds.push_back({key_offset, index_col, *eq_cond});
+                key_offset += index_col.len;
+                continue;
+            }
+
+            for (auto op : {OP_LT, OP_LE, OP_GT, OP_GE}) {
+                auto range_cond = find_value_cond(index_col, op);
+                if (range_cond.has_value()) {
+                    key_conds.push_back({key_offset, index_col, *range_cond});
+                }
+            }
+            break;
+        }
+        return key_conds;
+    }
 
    public:
     IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds,
@@ -112,9 +153,24 @@ class IndexScanExecutor : public AbstractExecutor {
             offset += index_col.len;
         }
         if (can_use_exact) {
-            ih->get_value(key.get(), &matched_rids_, context_->txn_);
+            ih->get_value(key.get(), &matched_rids_, context_ == nullptr ? nullptr : context_->txn_);
         } else {
-            ih->get_all_rids(&matched_rids_);
+            auto key_conds = build_index_key_conds();
+            if (key_conds.empty()) {
+                ih->get_all_rids(&matched_rids_);
+            } else {
+                ih->get_rids_by_key_predicate([&](const char *index_key) {
+                    for (auto &key_cond : key_conds) {
+                        int cmp = ix_compare(index_key + key_cond.key_offset,
+                                             key_cond.cond.rhs_val.raw->data,
+                                             key_cond.col.type, key_cond.col.len);
+                        if (!compare_result(cmp, key_cond.cond.op)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }, &matched_rids_);
+            }
         }
         while (cursor_ < matched_rids_.size()) {
             rid_ = matched_rids_[cursor_];

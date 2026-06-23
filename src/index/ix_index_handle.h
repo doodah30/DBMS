@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "ix_defs.h"
 #include "transaction/transaction.h"
+#include <functional>
 #include <map>
 
 enum class Operation { FIND = 0, INSERT, DELETE };  // 三种操作：查找、插入、删除
@@ -194,6 +195,15 @@ class IxIndexHandle {
     void get_all_rids(std::vector<Rid> *result) const {
         for (const auto &entry : entries_) {
             result->push_back(entry.second);
+        }
+    }
+
+    void get_rids_by_key_predicate(const std::function<bool(const char *)> &predicate,
+                                   std::vector<Rid> *result) const {
+        for (const auto &entry : entries_) {
+            if (predicate(entry.first.data())) {
+                result->push_back(entry.second);
+            }
         }
     }
 
