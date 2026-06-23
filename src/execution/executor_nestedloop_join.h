@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -24,6 +25,62 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
 
     std::vector<Condition> fed_conds_;          // join条件
     bool isend;
+    std::vector<std::unique_ptr<RmRecord>> left_block_;
+    size_t left_block_pos_ = 0;
+    std::unique_ptr<RmRecord> right_rec_;
+    std::unique_ptr<RmRecord> current_join_rec_;
+
+    static constexpr size_t JOIN_BUFFER_SIZE = 64 * 1024 * 1024;
+
+    bool load_left_block() {
+        left_block_.clear();
+        left_block_pos_ = 0;
+        size_t used = 0;
+        size_t left_tuple_len = left_->tupleLen();
+        while (!left_->is_end() && (left_block_.empty() || used + left_tuple_len <= JOIN_BUFFER_SIZE)) {
+            auto rec = left_->Next();
+            left_block_.push_back(std::make_unique<RmRecord>(*rec));
+            used += left_tuple_len;
+            left_->nextTuple();
+        }
+        return !left_block_.empty();
+    }
+
+    std::unique_ptr<RmRecord> make_join_record(const RmRecord *left_rec, const RmRecord *right_rec) const {
+        auto rec = std::make_unique<RmRecord>(len_);
+        memcpy(rec->data, left_rec->data, left_->tupleLen());
+        memcpy(rec->data + left_->tupleLen(), right_rec->data, right_->tupleLen());
+        return rec;
+    }
+
+    void find_next_match() {
+        current_join_rec_ = nullptr;
+        while (!left_block_.empty()) {
+            while (!right_->is_end()) {
+                if (right_rec_ == nullptr) {
+                    right_rec_ = right_->Next();
+                    left_block_pos_ = 0;
+                }
+                while (left_block_pos_ < left_block_.size()) {
+                    auto joined = make_join_record(left_block_[left_block_pos_].get(), right_rec_.get());
+                    left_block_pos_++;
+                    if (eval_conds(cols_, joined.get(), fed_conds_)) {
+                        current_join_rec_ = std::move(joined);
+                        return;
+                    }
+                }
+                right_->nextTuple();
+                right_rec_ = nullptr;
+            }
+
+            if (!load_left_block()) {
+                break;
+            }
+            right_->beginTuple();
+            right_rec_ = nullptr;
+        }
+        isend = true;
+    }
 
    public:
     NestedLoopJoinExecutor(std::unique_ptr<AbstractExecutor> left, std::unique_ptr<AbstractExecutor> right, 
@@ -47,46 +104,24 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         isend = false;
         left_->beginTuple();
         right_->beginTuple();
-        while (!left_->is_end()) {
-            while (!right_->is_end()) {
-                auto rec = Next();
-                if (eval_conds(cols_, rec.get(), fed_conds_)) {
-                    return;
-                }
-                right_->nextTuple();
-            }
-            left_->nextTuple();
-            right_->beginTuple();
+        right_rec_ = nullptr;
+        current_join_rec_ = nullptr;
+        if (!load_left_block()) {
+            isend = true;
+            return;
         }
-        isend = true;
+        find_next_match();
     }
 
     void nextTuple() override {
         if (isend) {
             return;
         }
-        right_->nextTuple();
-        while (!left_->is_end()) {
-            while (!right_->is_end()) {
-                auto rec = Next();
-                if (eval_conds(cols_, rec.get(), fed_conds_)) {
-                    return;
-                }
-                right_->nextTuple();
-            }
-            left_->nextTuple();
-            right_->beginTuple();
-        }
-        isend = true;
+        find_next_match();
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        auto left_rec = left_->Next();
-        auto right_rec = right_->Next();
-        auto rec = std::make_unique<RmRecord>(len_);
-        memcpy(rec->data, left_rec->data, left_->tupleLen());
-        memcpy(rec->data + left_->tupleLen(), right_rec->data, right_->tupleLen());
-        return rec;
+        return std::make_unique<RmRecord>(*current_join_rec_);
     }
 
     bool is_end() const override { return isend; }
