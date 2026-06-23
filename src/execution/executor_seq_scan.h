@@ -34,6 +34,14 @@ class SeqScanExecutor : public AbstractExecutor {
 
     SmManager *sm_manager_;
 
+    void lock_current_tuple() {
+        if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr &&
+            context_->txn_->get_isolation_level() == IsolationLevel::SERIALIZABLE &&
+            !context_->lock_mgr_->lock_shared_on_record(context_->txn_, rid_, fh_->GetFd())) {
+            throw TransactionAbortException(context_->txn_->get_transaction_id(), AbortReason::DEADLOCK_PREVENTION);
+        }
+    }
+
    public:
     SeqScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds, Context *context,
                     std::string visible_name = "") {
@@ -58,6 +66,10 @@ class SeqScanExecutor : public AbstractExecutor {
         const auto *snapshot = context_ != nullptr && context_->txn_ != nullptr
                                    ? context_->txn_->get_snapshot_records(tab_name_)
                                    : nullptr;
+        if (context_ != nullptr && context_->txn_ != nullptr &&
+            context_->txn_->get_isolation_level() == IsolationLevel::SERIALIZABLE) {
+            context_->txn_->set_has_read(true);
+        }
         if (snapshot != nullptr) {
             use_snapshot_ = true;
             snapshot_records_ = *snapshot;
@@ -65,6 +77,7 @@ class SeqScanExecutor : public AbstractExecutor {
             while (snapshot_cursor_ < snapshot_records_.size()) {
                 rid_ = snapshot_records_[snapshot_cursor_].first;
                 if (eval_conds(cols_, &snapshot_records_[snapshot_cursor_].second, fed_conds_)) {
+                    lock_current_tuple();
                     return;
                 }
                 snapshot_cursor_++;
@@ -77,6 +90,7 @@ class SeqScanExecutor : public AbstractExecutor {
             rid_ = scan_->rid();
             auto rec = fh_->get_record(rid_, context_);
             if (eval_conds(cols_, rec.get(), fed_conds_)) {
+                lock_current_tuple();
                 return;
             }
             scan_->next();
@@ -91,6 +105,7 @@ class SeqScanExecutor : public AbstractExecutor {
             while (snapshot_cursor_ < snapshot_records_.size()) {
                 rid_ = snapshot_records_[snapshot_cursor_].first;
                 if (eval_conds(cols_, &snapshot_records_[snapshot_cursor_].second, fed_conds_)) {
+                    lock_current_tuple();
                     return;
                 }
                 snapshot_cursor_++;
@@ -105,6 +120,7 @@ class SeqScanExecutor : public AbstractExecutor {
             rid_ = scan_->rid();
             auto rec = fh_->get_record(rid_, context_);
             if (eval_conds(cols_, rec.get(), fed_conds_)) {
+                lock_current_tuple();
                 return;
             }
             scan_->next();

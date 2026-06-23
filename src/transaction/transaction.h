@@ -84,6 +84,9 @@ class Transaction {
     inline timestamp_t get_start_ts() { return start_ts_; }
 
     inline IsolationLevel get_isolation_level() { return isolation_level_; }
+    inline void set_isolation_level(IsolationLevel isolation_level) { isolation_level_ = isolation_level; }
+    inline void set_has_read(bool has_read) { has_read_ = has_read; }
+    inline bool has_read() const { return has_read_; }
 
     inline TransactionState get_state() { return state_; }
     inline void set_state(TransactionState state) { state_ = state; }
@@ -169,6 +172,7 @@ class Transaction {
 
    private:
     bool txn_mode_;                   // 用于标识当前事务为显式事务还是单条SQL语句的隐式事务
+    bool has_read_ = false;
     TransactionState state_;          // 事务状态
     IsolationLevel isolation_level_;  // 事务的隔离级别，默认隔离级别为可串行化
     std::thread::id thread_id_;       // 当前事务对应的线程id

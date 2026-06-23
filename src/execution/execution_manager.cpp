@@ -128,6 +128,13 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
             }
             case T_SetTransactionIsolation:
             {
+                if (x->tab_name_ == "snapshot") {
+                    *context->session_isolation_level_ = IsolationLevel::REPEATABLE_READ;
+                    context->txn_->set_isolation_level(IsolationLevel::REPEATABLE_READ);
+                } else {
+                    *context->session_isolation_level_ = IsolationLevel::SERIALIZABLE;
+                    context->txn_->set_isolation_level(IsolationLevel::SERIALIZABLE);
+                }
                 break;
             }
             default:

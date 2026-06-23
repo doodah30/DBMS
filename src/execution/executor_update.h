@@ -39,6 +39,12 @@ class UpdateExecutor : public AbstractExecutor {
         context_ = context;
     }
     std::unique_ptr<RmRecord> Next() override {
+        if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr &&
+            context_->txn_->get_isolation_level() == IsolationLevel::SERIALIZABLE && context_->txn_->has_read() &&
+            !context_->lock_mgr_->lock_exclusive_on_table(context_->txn_, fh_->GetFd())) {
+            throw TransactionAbortException(context_->txn_->get_transaction_id(), AbortReason::DEADLOCK_PREVENTION);
+        }
+
         std::vector<std::unique_ptr<RmRecord>> new_records;
         new_records.reserve(rids_.size());
         for (auto &rid : rids_) {
@@ -46,7 +52,16 @@ class UpdateExecutor : public AbstractExecutor {
                 !context_->lock_mgr_->lock_exclusive_on_record(context_->txn_, rid, fh_->GetFd())) {
                 throw TransactionAbortException(context_->txn_->get_transaction_id(), AbortReason::DEADLOCK_PREVENTION);
             }
-            auto rec = fh_->get_record(rid, context_);
+            std::unique_ptr<RmRecord> rec;
+            try {
+                rec = fh_->get_record(rid, context_);
+            } catch (RecordNotFoundError &) {
+                if (context_ != nullptr && context_->txn_ != nullptr) {
+                    throw TransactionAbortException(context_->txn_->get_transaction_id(),
+                                                    AbortReason::DEADLOCK_PREVENTION);
+                }
+                throw;
+            }
             auto new_rec = std::make_unique<RmRecord>(*rec);
             for (auto &set_clause : set_clauses_) {
                 auto col = tab_.get_col(set_clause.lhs.col_name);
@@ -82,7 +97,16 @@ class UpdateExecutor : public AbstractExecutor {
         }
 
         for (size_t rec_idx = 0; rec_idx < rids_.size(); ++rec_idx) {
-            auto old_rec = fh_->get_record(rids_[rec_idx], context_);
+            std::unique_ptr<RmRecord> old_rec;
+            try {
+                old_rec = fh_->get_record(rids_[rec_idx], context_);
+            } catch (RecordNotFoundError &) {
+                if (context_ != nullptr && context_->txn_ != nullptr) {
+                    throw TransactionAbortException(context_->txn_->get_transaction_id(),
+                                                    AbortReason::DEADLOCK_PREVENTION);
+                }
+                throw;
+            }
             if (context_ != nullptr && context_->txn_ != nullptr) {
                 context_->txn_->append_write_record(
                     new WriteRecord(WType::UPDATE_TUPLE, tab_name_, rids_[rec_idx], *old_rec));

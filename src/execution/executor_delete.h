@@ -37,12 +37,27 @@ class DeleteExecutor : public AbstractExecutor {
     }
 
     std::unique_ptr<RmRecord> Next() override {
+        if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr &&
+            context_->txn_->get_isolation_level() == IsolationLevel::SERIALIZABLE && context_->txn_->has_read() &&
+            !context_->lock_mgr_->lock_exclusive_on_table(context_->txn_, fh_->GetFd())) {
+            throw TransactionAbortException(context_->txn_->get_transaction_id(), AbortReason::DEADLOCK_PREVENTION);
+        }
+
         for (auto &rid : rids_) {
             if (context_ != nullptr && context_->lock_mgr_ != nullptr && context_->txn_ != nullptr &&
                 !context_->lock_mgr_->lock_exclusive_on_record(context_->txn_, rid, fh_->GetFd())) {
                 throw TransactionAbortException(context_->txn_->get_transaction_id(), AbortReason::DEADLOCK_PREVENTION);
             }
-            auto rec = fh_->get_record(rid, context_);
+            std::unique_ptr<RmRecord> rec;
+            try {
+                rec = fh_->get_record(rid, context_);
+            } catch (RecordNotFoundError &) {
+                if (context_ != nullptr && context_->txn_ != nullptr) {
+                    throw TransactionAbortException(context_->txn_->get_transaction_id(),
+                                                    AbortReason::DEADLOCK_PREVENTION);
+                }
+                throw;
+            }
             if (context_ != nullptr && context_->txn_ != nullptr) {
                 context_->txn_->append_write_record(
                     new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, *rec));

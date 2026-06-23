@@ -10,6 +10,30 @@ See the Mulan PSL v2 for more details. */
 
 #include "lock_manager.h"
 
+namespace {
+bool is_exclusive(LockManager::LockMode mode) {
+    return mode == LockManager::LockMode::EXLUCSIVE ||
+           mode == LockManager::LockMode::INTENTION_EXCLUSIVE ||
+           mode == LockManager::LockMode::S_IX;
+}
+
+LockManager::GroupLockMode group_mode_after_grant(LockManager::LockMode mode) {
+    switch (mode) {
+        case LockManager::LockMode::SHARED:
+            return LockManager::GroupLockMode::S;
+        case LockManager::LockMode::EXLUCSIVE:
+            return LockManager::GroupLockMode::X;
+        case LockManager::LockMode::INTENTION_SHARED:
+            return LockManager::GroupLockMode::IS;
+        case LockManager::LockMode::INTENTION_EXCLUSIVE:
+            return LockManager::GroupLockMode::IX;
+        case LockManager::LockMode::S_IX:
+            return LockManager::GroupLockMode::SIX;
+    }
+    return LockManager::GroupLockMode::NON_LOCK;
+}
+}
+
 /**
  * @description: 申请行级共享锁
  * @return {bool} 加锁是否成功
@@ -18,7 +42,22 @@ See the Mulan PSL v2 for more details. */
  * @param {int} tab_fd
  */
 bool LockManager::lock_shared_on_record(Transaction* txn, const Rid& rid, int tab_fd) {
-    return lock_exclusive_on_record(txn, rid, tab_fd);
+    if (txn == nullptr) {
+        return true;
+    }
+    std::lock_guard<std::mutex> lock(latch_);
+    LockDataId lock_data_id(tab_fd, rid, LockDataType::RECORD);
+    auto iter = lock_table_.find(lock_data_id);
+    if (iter == lock_table_.end()) {
+        return true;
+    }
+    for (const auto &request : iter->second.request_queue_) {
+        if (request.granted_ && request.txn_id_ != txn->get_transaction_id() && is_exclusive(request.lock_mode_) &&
+            txn->get_transaction_id() > request.txn_id_) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /**
@@ -29,26 +68,7 @@ bool LockManager::lock_shared_on_record(Transaction* txn, const Rid& rid, int ta
  * @param {int} tab_fd 记录所在的表的fd
  */
 bool LockManager::lock_exclusive_on_record(Transaction* txn, const Rid& rid, int tab_fd) {
-    if (txn == nullptr) {
-        return true;
-    }
-    std::lock_guard<std::mutex> lock(latch_);
-    LockDataId lock_data_id(tab_fd, rid, LockDataType::RECORD);
-    auto &queue = lock_table_[lock_data_id];
-    for (const auto &request : queue.request_queue_) {
-        if (request.granted_ && request.txn_id_ == txn->get_transaction_id() &&
-            request.lock_mode_ == LockMode::EXLUCSIVE) {
-            return true;
-        }
-        if (request.granted_ && request.txn_id_ != txn->get_transaction_id()) {
-            return false;
-        }
-    }
-    queue.request_queue_.emplace_back(txn->get_transaction_id(), LockMode::EXLUCSIVE);
-    queue.request_queue_.back().granted_ = true;
-    queue.group_lock_mode_ = GroupLockMode::X;
-    txn->get_lock_set()->insert(lock_data_id);
-    return true;
+    return lock_on_data(txn, LockDataId(tab_fd, rid, LockDataType::RECORD), LockMode::EXLUCSIVE);
 }
 
 /**
@@ -58,7 +78,7 @@ bool LockManager::lock_exclusive_on_record(Transaction* txn, const Rid& rid, int
  * @param {int} tab_fd 目标表的fd
  */
 bool LockManager::lock_shared_on_table(Transaction* txn, int tab_fd) {
-    return true;
+    return lock_on_data(txn, LockDataId(tab_fd, LockDataType::TABLE), LockMode::SHARED);
 }
 
 /**
@@ -68,7 +88,7 @@ bool LockManager::lock_shared_on_table(Transaction* txn, int tab_fd) {
  * @param {int} tab_fd 目标表的fd
  */
 bool LockManager::lock_exclusive_on_table(Transaction* txn, int tab_fd) {
-    return true;
+    return lock_on_data(txn, LockDataId(tab_fd, LockDataType::TABLE), LockMode::EXLUCSIVE);
 }
 
 /**
@@ -78,7 +98,7 @@ bool LockManager::lock_exclusive_on_table(Transaction* txn, int tab_fd) {
  * @param {int} tab_fd 目标表的fd
  */
 bool LockManager::lock_IS_on_table(Transaction* txn, int tab_fd) {
-    return true;
+    return lock_shared_on_table(txn, tab_fd);
 }
 
 /**
@@ -88,7 +108,7 @@ bool LockManager::lock_IS_on_table(Transaction* txn, int tab_fd) {
  * @param {int} tab_fd 目标表的fd
  */
 bool LockManager::lock_IX_on_table(Transaction* txn, int tab_fd) {
-    return true;
+    return lock_exclusive_on_table(txn, tab_fd);
 }
 
 /**
@@ -114,5 +134,50 @@ bool LockManager::unlock(Transaction* txn, LockDataId lock_data_id) {
     if (queue.empty()) {
         lock_table_.erase(iter);
     }
+    return true;
+}
+
+bool LockManager::lock_on_data(Transaction *txn, const LockDataId &lock_data_id, LockMode lock_mode) {
+    if (txn == nullptr) {
+        return true;
+    }
+    if (txn->get_state() == TransactionState::SHRINKING) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(latch_);
+    auto &queue = lock_table_[lock_data_id];
+    auto txn_id = txn->get_transaction_id();
+    auto self_request = queue.request_queue_.end();
+
+    for (auto iter = queue.request_queue_.begin(); iter != queue.request_queue_.end(); ++iter) {
+        if (!iter->granted_) {
+            continue;
+        }
+        if (iter->txn_id_ == txn_id) {
+            self_request = iter;
+            continue;
+        }
+        if (lock_mode == LockMode::EXLUCSIVE || is_exclusive(iter->lock_mode_)) {
+            if (txn_id < iter->txn_id_) {
+                continue;
+            }
+            return false;
+        }
+    }
+
+    if (self_request != queue.request_queue_.end()) {
+        if (self_request->lock_mode_ == LockMode::EXLUCSIVE || self_request->lock_mode_ == lock_mode) {
+            return true;
+        }
+        self_request->lock_mode_ = lock_mode;
+        queue.group_lock_mode_ = group_mode_after_grant(lock_mode);
+        return true;
+    }
+
+    queue.request_queue_.emplace_back(txn_id, lock_mode);
+    queue.request_queue_.back().granted_ = true;
+    queue.group_lock_mode_ = group_mode_after_grant(lock_mode);
+    txn->get_lock_set()->insert(lock_data_id);
     return true;
 }

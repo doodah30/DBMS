@@ -18,13 +18,15 @@ See the Mulan PSL v2 for more details. */
 
 // used for data_send
 static int const_offset = -1;
+static IsolationLevel default_isolation_level = IsolationLevel::SERIALIZABLE;
 
 class Context {
 public:
     Context (LockManager *lock_mgr, LogManager *log_mgr, 
-            Transaction *txn, char *data_send = nullptr, int *offset = &const_offset)
+            Transaction *txn, char *data_send = nullptr, int *offset = &const_offset,
+            IsolationLevel *session_isolation_level = &default_isolation_level)
         : lock_mgr_(lock_mgr), log_mgr_(log_mgr), txn_(txn),
-          data_send_(data_send), offset_(offset) {
+          data_send_(data_send), offset_(offset), session_isolation_level_(session_isolation_level) {
             ellipsis_ = false;
           }
 
@@ -34,5 +36,6 @@ public:
     Transaction *txn_;
     char *data_send_;
     int *offset_;
+    IsolationLevel *session_isolation_level_;
     bool ellipsis_;
 };
