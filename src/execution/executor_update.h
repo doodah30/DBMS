@@ -108,6 +108,13 @@ class UpdateExecutor : public AbstractExecutor {
                 throw;
             }
             if (context_ != nullptr && context_->txn_ != nullptr) {
+                if (context_->log_mgr_ != nullptr) {
+                    UpdateLogRecord log_record(context_->txn_->get_transaction_id(), *old_rec, *new_records[rec_idx],
+                                               rids_[rec_idx], tab_name_);
+                    log_record.prev_lsn_ = context_->txn_->get_prev_lsn();
+                    lsn_t lsn = context_->log_mgr_->add_log_to_buffer(&log_record);
+                    context_->txn_->set_prev_lsn(lsn);
+                }
                 context_->txn_->append_write_record(
                     new WriteRecord(WType::UPDATE_TUPLE, tab_name_, rids_[rec_idx], *old_rec));
                 context_->txn_->upsert_snapshot_record(tab_name_, rids_[rec_idx], *new_records[rec_idx]);

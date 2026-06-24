@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <unordered_map>
 #include <optional>
 #include <functional>
@@ -53,6 +54,10 @@ public:
         sm_manager_ = sm_manager;
         lock_manager_ = lock_manager;
         concurrency_mode_ = concurrency_mode;
+        next_txn_id_ = static_cast<txn_id_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        next_timestamp_ = next_txn_id_.load();
     }
     
     ~TransactionManager() = default;

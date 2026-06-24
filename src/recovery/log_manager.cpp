@@ -17,12 +17,38 @@ See the Mulan PSL v2 for more details. */
  * @return {lsn_t} 返回该日志的日志记录号
  */
 lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
-  
+    if (log_record == nullptr) {
+        return INVALID_LSN;
+    }
+    std::lock_guard<std::mutex> lock(latch_);
+    if (log_buffer_.is_full(log_record->log_tot_len_)) {
+        disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
+        persist_lsn_ = log_record->lsn_;
+        memset(log_buffer_.buffer_, 0, sizeof(log_buffer_.buffer_));
+        log_buffer_.offset_ = 0;
+    }
+
+    lsn_t lsn = global_lsn_++;
+    log_record->lsn_ = lsn;
+    log_record->serialize(log_buffer_.buffer_ + log_buffer_.offset_);
+    log_buffer_.offset_ += log_record->log_tot_len_;
+
+    disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
+    persist_lsn_ = lsn;
+    memset(log_buffer_.buffer_, 0, sizeof(log_buffer_.buffer_));
+    log_buffer_.offset_ = 0;
+    return lsn;
 }
 
 /**
  * @description: 把日志缓冲区的内容刷到磁盘中，由于目前只设置了一个缓冲区，因此需要阻塞其他日志操作
  */
 void LogManager::flush_log_to_disk() {
-
+    std::lock_guard<std::mutex> lock(latch_);
+    if (log_buffer_.offset_ == 0) {
+        return;
+    }
+    disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
+    memset(log_buffer_.buffer_, 0, sizeof(log_buffer_.buffer_));
+    log_buffer_.offset_ = 0;
 }

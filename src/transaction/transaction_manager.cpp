@@ -73,6 +73,12 @@ Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manage
 
     std::unique_lock<std::mutex> lock(latch_);
     txn_map[txn->get_transaction_id()] = txn;
+    if (log_manager != nullptr) {
+        BeginLogRecord log_record(txn->get_transaction_id());
+        log_record.prev_lsn_ = txn->get_prev_lsn();
+        lsn_t lsn = log_manager->add_log_to_buffer(&log_record);
+        txn->set_prev_lsn(lsn);
+    }
     return txn;
 }
 
@@ -125,6 +131,10 @@ void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
     }
     txn->set_state(TransactionState::COMMITTED);
     if (log_manager != nullptr) {
+        CommitLogRecord log_record(txn->get_transaction_id());
+        log_record.prev_lsn_ = txn->get_prev_lsn();
+        lsn_t lsn = log_manager->add_log_to_buffer(&log_record);
+        txn->set_prev_lsn(lsn);
         log_manager->flush_log_to_disk();
     }
     if (sm_manager_ != nullptr) {
@@ -176,6 +186,10 @@ void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
     }
     txn->set_state(TransactionState::ABORTED);
     if (log_manager != nullptr) {
+        AbortLogRecord log_record(txn->get_transaction_id());
+        log_record.prev_lsn_ = txn->get_prev_lsn();
+        lsn_t lsn = log_manager->add_log_to_buffer(&log_record);
+        txn->set_prev_lsn(lsn);
         log_manager->flush_log_to_disk();
     }
     release_locks(lock_manager_, txn);
