@@ -789,25 +789,57 @@ std::vector<std::string> make_explain_lines(const std::shared_ptr<ast::SelectStm
 
 bool Planner::get_index_cols(std::string tab_name, std::string visible_name, std::vector<Condition> curr_conds,
                              std::vector<std::string>& index_col_names) {
+    // 这个函数负责回答一个问题：
+    // 当前表的这些 where 条件 curr_conds，能不能利用表上已有的某个索引？
+    //
+    // tab_name 是真实表名，例如 warehouse。
+    // visible_name 是查询计划里可见的表名，可能是别名，例如 select * from warehouse w 中的 w。
+    // 条件里的 cond.lhs_col.tab_name 使用的是 visible_name，所以匹配条件时要用 visible_name；
+    // 取表元数据时要用 tab_name。
     index_col_names.clear();
     TabMeta& tab = sm_manager_->db_.get_table(tab_name);
+
+    // best_prefix 表示目前找到的“最长可用索引前缀”长度。
+    //
+    // 例如索引 (a,b,c):
+    // where a = 1                    -> prefix = 1
+    // where a = 1 and b = 2          -> prefix = 2
+    // where a = 1 and b > 2          -> prefix = 2，但 b 是范围条件，到 b 就停止
+    // where b = 2                    -> prefix = 0，因为没有从第一列 a 开始匹配
+    //
+    // planner 会选择 prefix 最长的那个索引。
     size_t best_prefix = 0;
     std::vector<std::string> best_index_cols;
+
+    // 遍历当前表上的所有索引，逐个判断它们和 curr_conds 的匹配程度。
     for (auto &index : tab.indexes) {
         size_t prefix = 0;
+
+        // 按索引列顺序检查条件。这就是“左前缀原则”：
+        // 只有第一列有可用条件，才可能继续看第二列；
+        // 中间断了就不能跳过前面的列直接使用后面的列。
         for (auto &index_col : index.cols) {
             auto cond_it = std::find_if(curr_conds.begin(), curr_conds.end(), [&](const Condition &cond) {
+                // 当前只考虑“列 op 常量”的条件，并且不使用 != 条件做索引定位。
+                // 例如 a = 1、a > 1、a <= 10 可以用于索引；
+                // a != 1 选择性差且不好定位，这里不作为索引条件。
                 return cond.is_rhs_val && cond.lhs_col.tab_name == visible_name &&
                        cond.lhs_col.col_name == index_col.name && cond.op != OP_NE;
             });
             if (cond_it == curr_conds.end()) {
+                // 当前索引列没有对应 where 条件，左前缀到这里中断。
                 break;
             }
             prefix++;
             if (cond_it->op != OP_EQ) {
+                // 范围条件可以使用当前列，但范围列之后的索引列不能继续用于精确缩小范围。
+                // 例如索引 (a,b,c)，where a=1 and b>2 and c=3：
+                // 可用前缀到 b 为止，c 不能继续作为索引定位条件。
                 break;
             }
         }
+
+        // 选择匹配前缀最长的索引。
         if (prefix > best_prefix) {
             best_prefix = prefix;
             best_index_cols.clear();
@@ -817,8 +849,13 @@ bool Planner::get_index_cols(std::string tab_name, std::string visible_name, std
         }
     }
     if (best_prefix == 0) {
+        // 没有任何索引的第一列能被当前条件匹配，不能使用索引扫描。
         return false;
     }
+
+    // 返回最佳索引的完整列名列表，而不是只返回 prefix 部分。
+    // 后续 IndexScanExecutor 会根据完整 IndexMeta 构造 key 偏移，
+    // 再根据 where 条件决定是完整点查、范围过滤，还是全索引扫描。
     index_col_names = std::move(best_index_cols);
     return true;
 }

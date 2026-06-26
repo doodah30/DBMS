@@ -50,6 +50,9 @@ class IndexScanExecutor : public AbstractExecutor {
     };
 
     std::optional<Condition> find_value_cond(const ColMeta &index_col, CompOp op) const {
+        // 在当前扫描条件中，寻找“索引列 op 常量”的条件。
+        // 注意这里按索引列名找，而不是按 SQL where 条件书写顺序找。
+        // 例如索引 (id, name)，where name='a' and id=1 仍然能找到 id 条件。
         auto cond_it = std::find_if(fed_conds_.begin(), fed_conds_.end(), [&](const Condition &cond) {
             return cond.is_rhs_val && cond.op == op && cond.lhs_col.tab_name == visible_name_ &&
                    cond.lhs_col.col_name == index_col.name;
@@ -61,6 +64,15 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     std::vector<IndexKeyCondition> build_index_key_conds() const {
+        // 为范围/前缀扫描准备条件。
+        //
+        // 如果不能拼出完整等值 key，就退而求其次，收集索引左前缀上的可用条件：
+        // - 等值条件可以继续向后匹配下一列；
+        // - 范围条件可以用于当前列，但遇到范围列后就停止继续扩展。
+        //
+        // 例如索引 (id, name, score):
+        // where id = 1 and name > 'A' and score = 90
+        // 能用于索引过滤的是 id = 1、name > 'A'，score 不再用于索引前缀定位。
         std::vector<IndexKeyCondition> key_conds;
         int key_offset = 0;
         for (auto &index_col : index_meta_.cols) {
@@ -149,6 +161,14 @@ class IndexScanExecutor : public AbstractExecutor {
         cursor_ = 0;
         auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index_meta_.cols)).get();
         std::unique_ptr<char[]> key(new char[index_meta_.col_tot_len]);
+
+        // 1. 先尝试完整等值点查。
+        //
+        // 对索引 (id, name)，只有 where 中同时有 id = ? 和 name = ?，
+        // 才能拼出完整 key：
+        //   key = [id raw bytes][name raw bytes]
+        //
+        // 如果能拼出完整 key，就调用 get_value，直接得到最多一个 Rid。
         bool can_use_exact = true;
         int offset = 0;
         for (auto &index_col : index_meta_.cols) {
@@ -166,8 +186,18 @@ class IndexScanExecutor : public AbstractExecutor {
         if (can_use_exact) {
             ih->get_value(key.get(), &matched_rids_, context_ == nullptr ? nullptr : context_->txn_);
         } else {
+            // 2. 拼不出完整等值 key，就构造范围/前缀条件。
+            //
+            // 例如索引 (id, name):
+            //   where id > 10
+            //   where id = 1 and name > 'A'
+            //
+            // 当前 entries_ 是内存 map；这里通过 predicate 遍历所有索引 key，
+            // 在 key 的对应偏移位置取出字段 raw bytes，与 where 右值比较。
             auto key_conds = build_index_key_conds();
             if (key_conds.empty()) {
+                // 3. 如果连可用的索引前缀条件都没有，就退化为全索引扫描。
+                // 拿到所有 Rid 后，下面仍会用 eval_conds 做完整 where 过滤。
                 ih->get_all_rids(&matched_rids_);
             } else {
                 ih->get_rids_by_key_predicate([&](const char *index_key) {
@@ -183,6 +213,10 @@ class IndexScanExecutor : public AbstractExecutor {
                 }, &matched_rids_);
             }
         }
+
+        // 4. 索引只负责提供候选 Rid。
+        // 候选记录仍然必须回表读取真实记录，并用完整 where 条件 eval_conds 再过滤一遍。
+        // 这样即使索引过滤只用了部分条件，也不会输出不满足 where 的记录。
         while (cursor_ < matched_rids_.size()) {
             rid_ = matched_rids_[cursor_];
             auto rec = fh_->get_record(rid_, context_);

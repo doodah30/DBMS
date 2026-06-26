@@ -45,7 +45,8 @@ class InsertExecutor : public AbstractExecutor {
             throw TransactionAbortException(context_->txn_->get_transaction_id(), AbortReason::DEADLOCK_PREVENTION);
         }
 
-        // Make record buffer
+        // 1. 先把 SQL values 组装成一条完整的 RmRecord。
+        // 每个字段根据 ColMeta.offset 写到记录对应位置，最终得到表文件要插入的 raw bytes。
         RmRecord rec(fh_->get_file_hdr().record_size);
         for (size_t i = 0; i < values_.size(); i++) {
             auto &col = tab_.cols[i];
@@ -62,6 +63,14 @@ class InsertExecutor : public AbstractExecutor {
             val.init_raw(col.len);
             memcpy(rec.data + col.offset, val.raw->data, col.len);
         }
+
+        // 2. 唯一性检查。
+        // 当前索引按唯一索引处理，所以真正插入表记录前，要先检查所有索引的新 key
+        // 是否已经存在。这样可以避免“表记录插进去了，但索引发现重复”的半成功状态。
+        //
+        // 复合索引的 key 是多个索引列 raw bytes 的拼接：
+        //   key = [col1 bytes][col2 bytes]...
+        // 唯一的是整组 key，不是每个列单独唯一。
         for (auto &index : tab_.indexes) {
             auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
             std::unique_ptr<char[]> key(new char[index.col_tot_len]);
@@ -75,7 +84,7 @@ class InsertExecutor : public AbstractExecutor {
                 throw RMDBError("Duplicate key");
             }
         }
-        // Insert into record file
+        // 3. 唯一性检查通过后，才把记录插入表文件，得到新记录的 Rid。
         rid_ = fh_->insert_record(rec.data, context_);
         if (context_ != nullptr && context_->txn_ != nullptr) {
             if (context_->log_mgr_ != nullptr) {
@@ -88,7 +97,9 @@ class InsertExecutor : public AbstractExecutor {
             context_->txn_->upsert_snapshot_record(tab_name_, rid_, rec);
         }
         
-        // Insert into index
+        // 4. 表文件插入成功后，同步维护所有索引。
+        // 对每个索引重新从新记录 rec 中拼 key，并插入 key -> rid_。
+        // 如果不维护索引，后续 select 走索引就找不到这条新记录。
         for(size_t i = 0; i < tab_.indexes.size(); ++i) {
             auto& index = tab_.indexes[i];
             auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();

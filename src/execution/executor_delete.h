@@ -50,6 +50,8 @@ class DeleteExecutor : public AbstractExecutor {
             }
             std::unique_ptr<RmRecord> rec;
             try {
+                // 删除索引项之前必须先读出旧记录。
+                // 因为索引里保存的是 key -> Rid，而 key 要从旧记录的索引列 raw bytes 拼出来。
                 rec = fh_->get_record(rid, context_);
             } catch (RecordNotFoundError &) {
                 if (context_ != nullptr && context_->txn_ != nullptr) {
@@ -69,6 +71,9 @@ class DeleteExecutor : public AbstractExecutor {
                     new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, *rec));
                 context_->txn_->remove_snapshot_record(tab_name_, rid);
             }
+
+            // 从所有索引中删除这条记录对应的旧 key。
+            // 必须在真正 delete_record 之前做，因为 delete_record 后这条记录的内容就不能可靠读取了。
             for (auto &index : tab_.indexes) {
                 auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
                 std::unique_ptr<char[]> key(new char[index.col_tot_len]);
@@ -79,6 +84,8 @@ class DeleteExecutor : public AbstractExecutor {
                 }
                 ih->delete_entry(key.get(), context_->txn_);
             }
+
+            // 索引已经同步删除后，再删除表文件中的记录。
             fh_->delete_record(rid, context_);
         }
         return nullptr;

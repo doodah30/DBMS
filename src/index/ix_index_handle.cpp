@@ -178,9 +178,19 @@ std::pair<IxNodeHandle *, bool> IxIndexHandle::find_leaf_page(const char *key, O
 }
 
 /**
- * @brief 用于查找指定键在叶子结点中的对应的值result
+ * @brief 查找完整索引 key 对应的 Rid。
  *
- * @param key 查找的目标key值
+ * 当前补全版没有真正从磁盘 B+ 树 root 走到 leaf，而是直接查询 entries_。
+ * entries_ 的 key 是固定长度 raw bytes 字符串，所以这里必须用
+ * std::string(key, file_hdr_->col_tot_len_) 构造，不能用普通 C 字符串方式；
+ * 因为索引 key 中可能包含 '\0'。
+ *
+ * 典型调用场景：
+ * 1. Insert/Update 做唯一性检查：插入新 key 前先看 key 是否已存在。
+ * 2. IndexScanExecutor 做完整等值点查：where a = ? and b = ?。
+ * 3. IndexNestedLoopJoinExecutor 根据左表 key 查右表匹配 Rid。
+ *
+ * @param key 查找的目标key值，长度为 file_hdr_->col_tot_len_
  * @param result 用于存放结果的容器
  * @param transaction 事务指针
  * @return bool 返回目标键值对是否存在
@@ -237,10 +247,19 @@ void IxIndexHandle::insert_into_parent(IxNodeHandle *old_node, const char *key, 
 }
 
 /**
- * @brief 将指定键值对插入到B+树中
- * @param (key, value) 要插入的键值对
+ * @brief 插入索引项 key -> Rid。
+ *
+ * 理论上的 B+ 树实现应该先 find_leaf_page，再插入叶子结点，必要时 split 并向父节点递归插入。
+ * 当前实现直接插入 entries_ 这个内存有序 map。
+ *
+ * 因为课程 T5 把索引当作唯一索引处理，所以如果相同 key 已存在，直接抛 Duplicate key。
+ * 对复合索引来说，这里的 key 是所有索引列 raw bytes 拼接后的完整组合 key，
+ * 因此唯一性约束的是整组列组合，而不是每一列单独唯一。
+ *
+ * @param key 要插入的索引key，长度为 file_hdr_->col_tot_len_
+ * @param value 这个key对应的记录位置Rid
  * @param transaction 事务指针
- * @return page_id_t 插入到的叶结点的page_no
+ * @return page_id_t 为了兼容原 B+ 树接口返回 root_page_，当前调用方不依赖真实叶子页号
  */
 page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value, Transaction *transaction) {
     std::string key_str(key, file_hdr_->col_tot_len_);
@@ -252,9 +271,16 @@ page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value, Transac
 }
 
 /**
- * @brief 用于删除B+树中含有指定key的键值对
- * @param key 要删除的key值
+ * @brief 删除索引项。
+ *
+ * 理论上的 B+ 树删除需要定位叶子结点、删除 key、必要时合并或重分配结点。
+ * 当前实现只从 entries_ 中删除完整 key。
+ *
+ * DeleteExecutor 删除记录、UpdateExecutor 修改索引字段、事务回滚/恢复撤销索引变化时都会调用它。
+ *
+ * @param key 要删除的key值，长度为 file_hdr_->col_tot_len_
  * @param transaction 事务指针
+ * @return true 表示删除了一个已存在的索引项，false 表示原本没有这个 key
  */
 bool IxIndexHandle::delete_entry(const char *key, Transaction *transaction) {
     std::string key_str(key, file_hdr_->col_tot_len_);

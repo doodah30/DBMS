@@ -176,6 +176,12 @@ class IxIndexHandle {
     int fd_;                                    // 存储B+树的文件
     IxFileHdr* file_hdr_;                       // 存了root_page，但其初始化为2（第0页存FILE_HDR_PAGE，第1页存LEAF_HEADER_PAGE）
     std::mutex root_latch_;
+    // 当前课程补全版真正用于索引查找的数据结构。
+    // key 是从记录中按索引列顺序拼出来的原始字节串，长度固定为 file_hdr_->col_tot_len_；
+    // value 是这条 key 对应的记录位置 Rid。
+    //
+    // 理论上的完整实现应该把 key -> Rid 存在磁盘 B+ 树页里；
+    // 当前实现用 std::map 在内存中模拟有序索引，因此点查是 O(logN)，遍历天然按 key 有序。
     std::map<std::string, Rid> entries_;
 
    public:
@@ -192,12 +198,20 @@ class IxIndexHandle {
     // for search
     bool get_value(const char *key, std::vector<Rid> *result, Transaction *transaction);
 
+    // 全索引扫描：把当前索引中保存的所有 Rid 取出来。
+    // IndexScanExecutor 在没有可用点查/范围条件时会调用它，
+    // 之后仍然会用完整 where 条件再次过滤记录。
     void get_all_rids(std::vector<Rid> *result) const {
         for (const auto &entry : entries_) {
             result->push_back(entry.second);
         }
     }
 
+    // 条件索引扫描：遍历 entries_ 中的每个 key，让调用方提供的 predicate 判断 key 是否命中。
+    // 这个函数用于范围查询、左前缀查询等不能直接拼出完整唯一 key 的情况。
+    //
+    // 例如索引是 (id, name)，where id > 10 时，IndexScanExecutor 会传入一个 predicate，
+    // predicate 从 index_key 的 id 偏移处取出 raw bytes，并和 10 做比较。
     void get_rids_by_key_predicate(const std::function<bool(const char *)> &predicate,
                                    std::vector<Rid> *result) const {
         for (const auto &entry : entries_) {

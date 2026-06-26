@@ -54,6 +54,8 @@ class UpdateExecutor : public AbstractExecutor {
             }
             std::unique_ptr<RmRecord> rec;
             try {
+                // 1. 先读取旧记录，再拷贝出一份 new_rec。
+                // update 不是重建整张表，而是在旧记录副本上覆盖 set 子句涉及的字段。
                 rec = fh_->get_record(rid, context_);
             } catch (RecordNotFoundError &) {
                 if (context_ != nullptr && context_->txn_ != nullptr) {
@@ -76,6 +78,13 @@ class UpdateExecutor : public AbstractExecutor {
             new_records.push_back(std::move(new_rec));
         }
 
+        // 2. 更新前先检查所有新记录的索引 key 是否会违反唯一性。
+        //
+        // 为什么要在真正修改表/索引前统一检查？
+        // 因为如果更新到一半才发现 Duplicate key，前面已经改过的记录和索引就难回滚。
+        //
+        // 注意 existing != rids_[rec_idx]：
+        // 如果新 key 和自己旧 key 一样，这是允许的；只有撞到其他记录的 Rid 才算重复。
         for (size_t rec_idx = 0; rec_idx < new_records.size(); ++rec_idx) {
             for (auto &index : tab_.indexes) {
                 auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
@@ -99,6 +108,8 @@ class UpdateExecutor : public AbstractExecutor {
         for (size_t rec_idx = 0; rec_idx < rids_.size(); ++rec_idx) {
             std::unique_ptr<RmRecord> old_rec;
             try {
+                // 3. 真正执行更新前，再读一次旧记录。
+                // 后面删除旧索引 key、写日志/回滚信息都需要旧记录内容。
                 old_rec = fh_->get_record(rids_[rec_idx], context_);
             } catch (RecordNotFoundError &) {
                 if (context_ != nullptr && context_->txn_ != nullptr) {
@@ -119,6 +130,15 @@ class UpdateExecutor : public AbstractExecutor {
                     new WriteRecord(WType::UPDATE_TUPLE, tab_name_, rids_[rec_idx], *old_rec));
                 context_->txn_->upsert_snapshot_record(tab_name_, rids_[rec_idx], *new_records[rec_idx]);
             }
+
+            // 4. 同步维护所有索引。
+            //
+            // update 对索引来说等价于：
+            //   删除旧 key -> Rid
+            //   插入新 key -> 同一个 Rid
+            //
+            // 即使 set 子句没有改到某个索引列，old_key 和 new_key 可能相同；
+            // 当前实现仍然统一 delete + insert，逻辑简单，能保持索引和表记录一致。
             for (auto &index : tab_.indexes) {
                 auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
                 std::unique_ptr<char[]> old_key(new char[index.col_tot_len]);
@@ -132,6 +152,8 @@ class UpdateExecutor : public AbstractExecutor {
                 ih->delete_entry(old_key.get(), context_->txn_);
                 ih->insert_entry(new_key.get(), rids_[rec_idx], context_->txn_);
             }
+
+            // 5. 索引维护完成后，把新记录写回表文件原 Rid 位置。
             fh_->update_record(rids_[rec_idx], new_records[rec_idx]->data, context_);
         }
         return nullptr;
